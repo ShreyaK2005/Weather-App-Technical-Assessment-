@@ -1,5 +1,5 @@
-# Weather-App-Backend
-# Weather App — Backend
+# Weather-App
+# Weather App — Backend (Python)
 
 FastAPI + SQLAlchemy (SQLite) + Open-Meteo API (no key required).
 
