@@ -15,9 +15,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from Weather_Service import get_air_quality_advice
 from sqlalchemy import func
+from typing import Optional
 
 import models, schemas, Weather_Service
 from Database import engine, get_db
+from datetime import date
 
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib import colors
@@ -47,8 +49,23 @@ app.add_middleware(
 # ---------- Weather display endpoints (Assessment 1 needs) ----------
 
 @app.get("/weather/current")
-async def current_weather(location: str = Query(..., description="City, zip, landmark, or 'lat,lon'")):
+async def current_weather(
+    location: str = Query(..., description="City, zip, landmark, or 'lat,lon'"),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+):
     logger.info(f"Weather request received for location: {location}")
+    if (start_date and not end_date) or (end_date and not start_date):
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide both start_date and end_date."
+        )
+
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="end_date must be on or after start_date."
+        )
     try:
         loc = await Weather_Service.geocode_location(location)
 
@@ -60,22 +77,68 @@ async def current_weather(location: str = Query(..., description="City, zip, lan
         logger.error(f"Weather API unavailable: {e}")
         raise HTTPException(status_code=503, detail=str(e))
 
-    data = await Weather_Service.get_current_and_forecast(loc["latitude"], loc["longitude"])
-    logger.info(f"Successfully retrieved weather for {loc['name']}")
-    air_quality = await Weather_Service.get_air_quality(loc["latitude"], loc["longitude"])
-    air_quality["status"] = Weather_Service.get_aqi_description(air_quality.get("european_aqi", 0))
-    air_quality["health_advice"] = Weather_Service.get_air_quality_advice(air_quality.get("european_aqi", 0))
-    temperature = data["current"]["temperature_2m"]
-    daily = data.get("daily", {})
+    # Decide which weather endpoint to use
 
-    uv_index = None
+    if start_date and end_date:
 
-    if daily.get("uv_index_max"):
-        uv_index = daily["uv_index_max"][0]
+        weather_data = await Weather_Service.get_daily_range(
+            loc["latitude"],
+            loc["longitude"],
+            start_date,
+            end_date
+        )
+
+        temperature = None
+        uv_index = None
+
+    else:
+
+        data = await Weather_Service.get_current_and_forecast(
+            loc["latitude"],
+            loc["longitude"]
+        )
+
+        logger.info(f"Successfully retrieved weather for {loc['name']}")
+
+        temperature = data["current"]["temperature_2m"]
+
+        daily = data.get("daily", {})
+
+        uv_index = None
+
+        if daily.get("uv_index_max"):
+            uv_index = daily["uv_index_max"][0]
+
+
+    air_quality = await Weather_Service.get_air_quality(
+        loc["latitude"],
+        loc["longitude"]
+    )
+
+    air_quality["status"] = Weather_Service.get_aqi_description(
+        air_quality.get("european_aqi", 0)
+    )
+
+    air_quality["health_advice"] = Weather_Service.get_air_quality_advice(
+        air_quality.get("european_aqi", 0)
+    )
+
     return {
         "location": loc,
-        "current": data.get("current"),
-        "daily_forecast": data.get("daily"),
+
+        "current": None if start_date else data.get("current"),
+
+        "daily_forecast":
+            weather_data if start_date
+            else data.get("daily"),
+
+        "start_date":
+            start_date if start_date
+            else date.today(),
+
+        "end_date":
+            end_date if end_date
+            else data["daily"]["time"][-1],
         "air_quality": air_quality,
         "google_maps": Weather_Service.get_google_maps_url(
             loc["latitude"],
@@ -84,9 +147,10 @@ async def current_weather(location: str = Query(..., description="City, zip, lan
         "youtube": Weather_Service.get_youtube_url(
             loc["name"]
         ),
-        "weather_advice": Weather_Service.weather_advice(
-            temperature
-        ),
+        "weather_advice":
+            Weather_Service.weather_advice(temperature)
+            if temperature is not None
+            else ["Weather advice unavailable for custom date range."],
         "uv_index": uv_index,
 
         "uv_advice": Weather_Service.get_uv_advice(uv_index)
@@ -145,9 +209,27 @@ async def create_record(payload: schemas.WeatherRecordCreate, db: Session = Depe
 
 
 @app.get("/records", response_model=list[schemas.WeatherRecordOut])
-def list_records(db: Session = Depends(get_db)):
-    records = db.query(models.WeatherRecord).all()
-    return [_serialize(r) for r in records]
+def list_records(
+    location: Optional[str] = Query(
+        None,
+        description="Optional location filter. Leave blank to return all records."
+    ),
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.WeatherRecord)
+
+    # Filter only if a location is provided
+    if location:
+        query = query.filter(
+            models.WeatherRecord.location_query.ilike(f"%{location}%")
+        )
+
+    records = query.all()
+
+    return [_serialize(record) for record in records]
+
+
+
 
 
 @app.get("/records/{record_id}", response_model=schemas.WeatherRecordOut)
