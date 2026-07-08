@@ -1,7 +1,7 @@
 """
 Main FastAPI application.
 
-Run with:  uvicorn app.main:app --reload
+Run with:  uvicorn main:app --reload
 Docs at:   http://127.0.0.1:8000/docs
 """
 import json
@@ -139,7 +139,9 @@ async def current_weather(
         "end_date":
             end_date if end_date
             else data["daily"]["time"][-1],
-        "air_quality": air_quality,
+        "air_quality":
+            None if start_date
+            else air_quality,
         "google_maps": Weather_Service.get_google_maps_url(
             loc["latitude"],
             loc["longitude"]
@@ -148,7 +150,7 @@ async def current_weather(
             loc["name"]
         ),
         "weather_advice":
-            Weather_Service.weather_advice(temperature)
+            Weather_Service.current_weather_advice(temperature)
             if temperature is not None
             else ["Weather advice unavailable for custom date range."],
         "uv_index": uv_index,
@@ -346,8 +348,8 @@ async def export_record (record_id: int, format: str = Query("json", enum=["json
         record.resolved_name
     )
 
-    weather_advice = Weather_Service.weather_advice(
-        temperature
+    weather_advice = "<br/>".join(
+        Weather_Service.current_weather_advice(temperature)
     )
 
     aqi_status = Weather_Service.get_aqi_description(
@@ -436,7 +438,7 @@ async def export_record (record_id: int, format: str = Query("json", enum=["json
 
         elements.append(
             Paragraph(
-                f"<b>Health Advice:</b> {aqi_advice}",
+                f"<b>Health Advice:</b><br/>{aqi_advice}",
                 styles["Normal"]
             )
         )
@@ -480,15 +482,31 @@ async def export_record (record_id: int, format: str = Query("json", enum=["json
 
         elements.append(Paragraph("<br/>", styles["Normal"]))
 
-        table_data = [
-            ["Date", "Max Temp (°C)", "Min Temp (°C)"]
-        ]
+        table_data = [[
+            "Date",
+            "Max Temp",
+            "Min Temp",
+            "Humidity",
+            "Wind",
+            "Rain",
+            "Rain %",
+            "UV",
+            "Sunrise",
+            "Sunset"
+        ]]
 
         for day in data["weather_data"]:
             table_data.append([
-                day["date"],
-                str(day["temp_max"]),
-                str(day["temp_min"])
+                day.get("date", "-"),
+                str(day.get("temp_max", "-")),
+                str(day.get("temp_min", "-")),
+                str(day.get("humidity", "-")),
+                str(day.get("wind_speed", "-")),
+                str(day.get("rain", "-")),
+                str(day.get("rain_probability", "-")),
+                str(day.get("uv_index", "-")),
+                day.get("sunrise", "-"),
+                day.get("sunset", "-")
             ])
 
         table = Table(table_data)
