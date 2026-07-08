@@ -22,11 +22,9 @@ export default function RecordForm({
       setLoading(true);
 
       await createRecord({
-
         location_query: searchedLocation,
         start_date: searchedStartDate,
         end_date: searchedEndDate,
-
       });
 
       setMessage("✅ Weather record saved successfully!");
