@@ -59,7 +59,7 @@ async def geocode_location(query: str) -> dict:
 
     results = data.get("results")
     if not results:
-        raise LocationNotFoundError(f"Could not resolve location: '{query}'")
+        raise LocationNotFoundError(f"Oops! Location not found, please try again: '{query}'")
 
     top = results[0]
     label = f"{top['name']}, {top.get('admin1', '')} {top.get('country', '')}".strip()
@@ -81,7 +81,13 @@ async def get_current_and_forecast(lat: float, lon: float) -> dict:
             "temperature_2m_max,"
             "temperature_2m_min,"
             "weather_code,"
-            "uv_index_max"
+            "uv_index_max,"
+            "precipitation_sum,"
+            "precipitation_probability_max,"
+            "wind_speed_10m_max,"
+            "relative_humidity_2m_mean,"
+            "sunrise,"
+            "sunset"
         ),
         "forecast_days": 5,
         "timezone": "auto",
@@ -90,7 +96,26 @@ async def get_current_and_forecast(lat: float, lon: float) -> dict:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(FORECAST_URL, params=params)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+
+            daily = data.get("daily", {})
+
+            daily["weather_advice"] = [
+                weather_advice(hi, lo)
+                for hi, lo in zip(
+                    daily.get("temperature_2m_max", []),
+                    daily.get("temperature_2m_min", [])
+                )
+            ]
+
+            daily["uv_advice"] = [
+                get_uv_advice(uv)
+                for uv in daily.get("uv_index_max", [])
+            ]
+
+            data["daily"] = daily
+
+            return data
 
     except (httpx.RequestError, httpx.HTTPStatusError):
         raise WeatherServiceError(
@@ -118,7 +143,13 @@ async def get_daily_range(lat: float, lon: float, start: date, end: date) -> lis
                         "longitude": lon,
                         "start_date": start.isoformat(),
                         "end_date": min(end, today).isoformat(),
-                        "daily": "temperature_2m_max,temperature_2m_min",
+                        "daily": (
+                            "temperature_2m_max,"
+                            "temperature_2m_min,"
+                            "weather_code,"
+                            "precipitation_sum,"
+                            "wind_speed_10m_max"
+                        ),
                         "timezone": "auto",
                     },
                 )
@@ -133,7 +164,18 @@ async def get_daily_range(lat: float, lon: float, start: date, end: date) -> lis
                         "longitude": lon,
                         "start_date": max(start, today).isoformat(),
                         "end_date": end.isoformat(),
-                        "daily": "temperature_2m_max,temperature_2m_min",
+                        "daily": (
+                            "temperature_2m_max,"
+                            "temperature_2m_min,"
+                            "weather_code,"
+                            "uv_index_max,"
+                            "precipitation_sum,"
+                            "precipitation_probability_max,"
+                            "wind_speed_10m_max,"
+                            "relative_humidity_2m_mean,"
+                            "sunrise,"
+                            "sunset"
+                        ),
                         "timezone": "auto",
                     },
                 )
@@ -149,10 +191,63 @@ async def get_daily_range(lat: float, lon: float, start: date, end: date) -> lis
     merged = []
     for block in results:
         dates = block.get("time", [])
+
         tmax = block.get("temperature_2m_max", [])
         tmin = block.get("temperature_2m_min", [])
-        for d, hi, lo in zip(dates, tmax, tmin):
-            merged.append({"date": d, "temp_max": hi, "temp_min": lo})
+        weather = block.get("weather_code", [])
+        uv = block.get("uv_index_max", [])
+        humidity = block.get("relative_humidity_2m_mean", [])
+        wind = block.get("wind_speed_10m_max", [])
+        rain = block.get("precipitation_sum", [])
+        rain_prob = block.get("precipitation_probability_max", [])
+        sunrise = block.get("sunrise", [])
+        sunset = block.get("sunset", [])
+
+        for i in range(len(dates)):
+            merged.append({
+                "date": dates[i],
+
+                "temp_max":
+                    tmax[i] if i < len(tmax) else None,
+
+                "temp_min":
+                    tmin[i] if i < len(tmin) else None,
+
+                "weather_code":
+                    weather[i] if i < len(weather) else None,
+
+                "uv_index":
+                    uv[i] if i < len(uv) else None,
+
+                "humidity":
+                    humidity[i] if i < len(humidity) else None,
+
+                "wind_speed":
+                    wind[i] if i < len(wind) else None,
+
+                "rain":
+                    rain[i] if i < len(rain) else None,
+
+                "rain_probability":
+                    rain_prob[i] if i < len(rain_prob) else None,
+
+                "sunrise":
+                    sunrise[i] if i < len(sunrise) else None,
+
+                "sunset":
+                    sunset[i] if i < len(sunset) else None,
+
+                "uv_advice":
+                    get_uv_advice(uv[i])
+                    if i < len(uv)
+                    else "UV data unavailable.",
+                         
+                "weather_advice":
+                     weather_advice(
+                     tmax[i] if i < len(tmax) else 25,
+                     tmin[i] if i < len(tmin) else 15
+            )
+            })
     return merged
 
 
@@ -179,35 +274,50 @@ async def get_air_quality(lat: float, lon: float) -> dict:
 
     return data.get("current", {})
 
+
 def get_google_maps_url(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps?q={lat},{lon}"
 def get_youtube_url(location: str) -> str:
     return (
         f"https://www.youtube.com/results?search_query={location}"
     )
-def weather_advice(temp: float) -> list[str]:
 
-    advice = []
+def weather_advice(temp_max: float, temp_min: float) -> list[str]:
 
-    if temp >= 35:
-        advice.extend([
-            "Stay hydrated.",
-            "Wear light clothing.",
-            "Avoid prolonged outdoor activity during the afternoon."
-        ])
+        advice = []
 
-    elif temp <= 10:
-        advice.extend([
-            "Wear warm clothing.",
-            "Be cautious of cold weather."
-        ])
+        if temp_max >= 35:
+            advice.extend([
+                "Stay hydrated.",
+                "Wear light clothing.",
+                "Avoid prolonged outdoor activity during the afternoon."
+            ])
 
-    else:
-        advice.append(
-            "Weather conditions are comfortable."
-        )
+        elif temp_max >= 30:
+            advice.extend([
+                "Carry water if you're outdoors.",
+                "Wear light clothing.",
+                "Use sunscreen during peak sunlight hours."
+            ])
 
-    return advice
+        if temp_min <= 10:
+            advice.extend([
+                "Wear warm clothing.",
+                "Be cautious of cold weather."
+            ])
+
+        elif temp_min <= 20:
+            advice.append(
+                "Carry a light jacket for cooler mornings and evenings."
+            )
+
+        if 20 < temp_max < 30:
+            advice.append(
+                "Weather conditions are comfortable for most outdoor activities."
+            )
+
+        return advice
+
 def get_aqi_description(aqi: int) -> str:
     if aqi <= 20:
         return "Excellent"
@@ -260,3 +370,66 @@ def get_uv_advice(uv):
 
     else:
         return "Extreme UV exposure. Avoid going outdoors unless absolutely necessary."
+
+def get_weather_description(code):
+
+    weather_codes = {
+        0: "Clear Sky",
+        1: "Mainly Clear",
+        2: "Partly Cloudy",
+        3: "Overcast",
+        45: "Fog",
+        48: "Depositing Rime Fog",
+        51: "Light Drizzle",
+        53: "Moderate Drizzle",
+        55: "Dense Drizzle",
+        61: "Light Rain",
+        63: "Moderate Rain",
+        65: "Heavy Rain",
+        71: "Light Snow",
+        73: "Moderate Snow",
+        75: "Heavy Snow",
+        80: "Rain Showers",
+        81: "Heavy Rain Showers",
+        82: "Violent Rain Showers",
+        95: "Thunderstorm",
+        96: "Thunderstorm with Hail",
+        99: "Severe Thunderstorm",
+    }
+
+    return weather_codes.get(code, "Unknown")
+
+def current_weather_advice(temp: float) -> list[str]:
+    advice = []
+
+    if temp >= 35:
+        advice.extend([
+            "Stay hydrated.",
+            "Wear light clothing.",
+            "Avoid prolonged outdoor activity during the afternoon."
+        ])
+
+    elif temp >= 30:
+        advice.extend([
+            "Carry water if you're outdoors.",
+            "Wear light clothing.",
+            "Use sunscreen."
+        ])
+
+    elif temp <= 10:
+        advice.extend([
+            "Wear warm clothing.",
+            "Be cautious of cold weather."
+        ])
+
+    elif temp <= 20:
+        advice.append(
+            "Carry a light jacket."
+        )
+
+    else:
+        advice.append(
+            "Weather conditions are comfortable."
+        )
+
+    return advice
