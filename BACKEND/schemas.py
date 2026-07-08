@@ -9,8 +9,29 @@ from pydantic import BaseModel, field_validator
 
 class DailyWeather(BaseModel):
     date: date
+
     temp_max: float
     temp_min: float
+
+    weather_code: Optional[int] = None
+
+    humidity: Optional[float] = None
+
+    wind_speed: Optional[float] = None
+
+    rain: Optional[float] = None
+
+    rain_probability: Optional[float] = None
+
+    uv_index: Optional[float] = None
+
+    sunrise: Optional[str] = None
+
+    sunset: Optional[str] = None
+
+    uv_advice: Optional[str] = None
+
+    weather_advice: List[str] = []
 
 
 class WeatherRecordCreate(BaseModel):
@@ -20,10 +41,22 @@ class WeatherRecordCreate(BaseModel):
 
     @field_validator("end_date")
     @classmethod
-    def end_after_start(cls, end_date, info):
+    def validate_dates(cls, end_date, info):
+
         start_date = info.data.get("start_date")
-        if start_date and end_date < start_date:
-            raise ValueError("end_date must be on or after start_date")
+
+        if start_date:
+
+            if end_date < start_date:
+                raise ValueError(
+                    "End date must be after start date."
+                )
+
+            if (end_date - start_date).days > 15:
+                raise ValueError(
+                    "Date range invalid. Please try to keep dates to maximum 15 days."
+                )
+
         return end_date
 
 
@@ -34,6 +67,26 @@ class WeatherRecordUpdate(BaseModel):
     location_query: Optional[str] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_dates(cls, end_date, info):
+
+        start_date = info.data.get("start_date")
+
+        if start_date and end_date:
+
+            if end_date < start_date:
+                raise ValueError(
+                    "End date must be after start date."
+                )
+
+            if (end_date - start_date).days > 15:
+                raise ValueError(
+                    "Date range invalid. Please try to keep dates to maximum 15 days."
+                )
+
+        return end_date
 
 
 class WeatherRecordOut(BaseModel):
